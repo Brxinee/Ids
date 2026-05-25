@@ -1,0 +1,10 @@
+# Runtime state — regenerated on each run
+checked.json
+available_usernames.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
