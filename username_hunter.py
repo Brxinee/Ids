@@ -31,6 +31,7 @@ import requests
 SCRIPT_DIR = Path(__file__).parent.resolve()
 CHECKED_FILE = SCRIPT_DIR / "checked.json"
 AVAILABLE_CSV = SCRIPT_DIR / "available_usernames.csv"
+PROGRESS_FILE = SCRIPT_DIR / "progress.txt"
 UNCOMMON_WORDS_FILE = SCRIPT_DIR / "uncommon_words.txt"
 DICT_FILE = Path("/usr/share/dict/words")
 
@@ -89,6 +90,48 @@ def append_available(username: str, strategy: str) -> None:
     with open(AVAILABLE_CSV, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([username, strategy, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())])
+
+
+def write_progress(total_checked: int, available_count: int, target: int,
+                   strategy: str, last_username: str, start_time: float) -> None:
+    """Write a human-readable progress snapshot to progress.txt."""
+    elapsed = time.time() - start_time
+    elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+    rate = (total_checked / elapsed * 3600) if elapsed > 0 else 0
+    pct = (available_count / target * 100) if target > 0 else 0
+
+    # Read available CSV for the list of finds so far
+    found_lines = []
+    if AVAILABLE_CSV.exists():
+        try:
+            with open(AVAILABLE_CSV, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    found_lines.append(f"  {row['username']:<12} [{row['strategy']}]  {row['timestamp']}")
+        except Exception:
+            pass
+
+    lines = [
+        "=" * 50,
+        f"  Instagram Username Hunter — Progress Report",
+        f"  Updated : {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+        "=" * 50,
+        f"  Checked       : {total_checked}",
+        f"  Available      : {available_count} / {target}  ({pct:.1f}%)",
+        f"  Elapsed        : {elapsed_str}",
+        f"  Rate           : ~{rate:.0f} checks/hour",
+        f"  Strategy now   : {strategy}",
+        f"  Last checked   : {last_username}",
+        "-" * 50,
+        f"  Available usernames found so far:",
+    ]
+    if found_lines:
+        lines.extend(found_lines)
+    else:
+        lines.append("  (none yet)")
+    lines.append("=" * 50)
+
+    PROGRESS_FILE.write_text("\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -364,10 +407,12 @@ def main() -> None:
     print()
 
     session = requests.Session()
+    start_time = time.time()
 
     # Save checked state every N checks to avoid constant disk writes
     SAVE_INTERVAL = 50
     checks_since_save = 0
+    last_username = ""
 
     try:
         for username, strategy in infinite_candidate_generator(args.min_len, args.max_len):
@@ -381,6 +426,7 @@ def main() -> None:
             checked.add(username)
             total_checked += 1
             checks_since_save += 1
+            last_username = username
 
             if args.dry_run:
                 # Simulate: randomly decide available (1-in-30 chance)
@@ -404,10 +450,14 @@ def main() -> None:
             if is_available:
                 available_count += 1
                 append_available(username, strategy)
+                write_progress(total_checked, available_count, args.target,
+                               strategy, last_username, start_time)
 
-            # Periodic state save
+            # Periodic state save + progress report
             if checks_since_save >= SAVE_INTERVAL:
                 save_checked(checked)
+                write_progress(total_checked, available_count, args.target,
+                               strategy, last_username, start_time)
                 checks_since_save = 0
 
             if available_count >= args.target:
@@ -419,8 +469,11 @@ def main() -> None:
 
     finally:
         save_checked(checked)
+        write_progress(total_checked, available_count, args.target,
+                       "", last_username, start_time)
         print(f"State saved → {CHECKED_FILE}")
         print(f"Results    → {AVAILABLE_CSV}")
+        print(f"Progress   → {PROGRESS_FILE}")
 
 
 if __name__ == "__main__":

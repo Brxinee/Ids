@@ -1,6 +1,7 @@
 # Runtime state — regenerated on each run
 checked.json
 available_usernames.csv
+progress.txt
 
 # Python
 __pycache__/
