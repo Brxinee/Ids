@@ -31,6 +31,7 @@ import requests
 SCRIPT_DIR = Path(__file__).parent.resolve()
 CHECKED_FILE = SCRIPT_DIR / "checked.json"
 AVAILABLE_CSV = SCRIPT_DIR / "available_usernames.csv"
+DOTTED_CSV = SCRIPT_DIR / "available_dotted.csv"
 PROGRESS_FILE = SCRIPT_DIR / "progress.txt"
 UNCOMMON_WORDS_FILE = SCRIPT_DIR / "uncommon_words.txt"
 DICT_FILE = Path("/usr/share/dict/words")
@@ -78,59 +79,93 @@ def save_checked(checked: set) -> None:
 
 
 def ensure_csv_header() -> None:
-    """Create CSV with header row if it doesn't exist yet."""
+    """Create CSVs with header rows if they don't exist yet."""
     if not AVAILABLE_CSV.exists():
         with open(AVAILABLE_CSV, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["username", "strategy", "timestamp"])
+    if not DOTTED_CSV.exists():
+        with open(DOTTED_CSV, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["username", "word1", "word2", "timestamp"])
 
 
 def append_available(username: str, strategy: str) -> None:
-    """Append one available username to the CSV immediately."""
+    """Append one available plain username to the CSV immediately."""
     with open(AVAILABLE_CSV, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([username, strategy, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())])
 
 
+def append_dotted(username: str) -> None:
+    """Append one available dotted username to the dotted CSV immediately."""
+    parts = username.split(".", 1)
+    word1 = parts[0] if len(parts) > 0 else ""
+    word2 = parts[1] if len(parts) > 1 else ""
+    with open(DOTTED_CSV, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([username, word1, word2, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())])
+
+
 def write_progress(total_checked: int, available_count: int, target: int,
-                   strategy: str, last_username: str, start_time: float) -> None:
+                   available_dotted: int, strategy: str,
+                   last_username: str, start_time: float) -> None:
     """Write a human-readable progress snapshot to progress.txt."""
     elapsed = time.time() - start_time
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
     rate = (total_checked / elapsed * 3600) if elapsed > 0 else 0
     pct = (available_count / target * 100) if target > 0 else 0
 
-    # Read available CSV for the list of finds so far
+    # Read available CSV for the list of plain finds so far
     found_lines = []
     if AVAILABLE_CSV.exists():
         try:
             with open(AVAILABLE_CSV, newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    found_lines.append(f"  {row['username']:<12} [{row['strategy']}]  {row['timestamp']}")
+                    found_lines.append(f"  {row['username']:<14} [{row['strategy']}]  {row['timestamp']}")
+        except Exception:
+            pass
+
+    # Read dotted CSV for the list of dotted finds so far
+    dotted_lines = []
+    if DOTTED_CSV.exists():
+        try:
+            with open(DOTTED_CSV, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    dotted_lines.append(f"  {row['username']:<20}  {row['timestamp']}")
         except Exception:
             pass
 
     lines = [
-        "=" * 50,
+        "=" * 54,
         f"  Instagram Username Hunter — Progress Report",
         f"  Updated : {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-        "=" * 50,
-        f"  Checked       : {total_checked}",
-        f"  Available      : {available_count} / {target}  ({pct:.1f}%)",
-        f"  Elapsed        : {elapsed_str}",
-        f"  Rate           : ~{rate:.0f} checks/hour",
-        f"  Strategy now   : {strategy}",
-        f"  Last checked   : {last_username}",
-        "-" * 50,
-        f"  Available usernames found so far:",
+        "=" * 54,
+        f"  Checked         : {total_checked}",
+        f"  Plain available : {available_count} / {target}  ({pct:.1f}%)",
+        f"  Dotted available: {available_dotted}  (no target — collect all)",
+        f"  Elapsed         : {elapsed_str}",
+        f"  Rate            : ~{rate:.0f} checks/hour",
+        f"  Strategy now    : {strategy}",
+        f"  Last checked    : {last_username}",
+        "-" * 54,
+        f"  Plain usernames found:",
     ]
     if found_lines:
         lines.extend(found_lines)
     else:
         lines.append("  (none yet)")
-    lines.append("=" * 50)
 
+    lines.append("-" * 54)
+    lines.append(f"  Dotted handles found (word.word):")
+    if dotted_lines:
+        lines.extend(dotted_lines)
+    else:
+        lines.append("  (none yet)")
+
+    lines.append("=" * 54)
     PROGRESS_FILE.write_text("\n".join(lines) + "\n")
 
 
@@ -258,6 +293,44 @@ def foreign_words_generator(min_len: int, max_len: int):
         yield from pool
 
 
+def dotted_generator():
+    """
+    Yield 'word1.word2' dotted handles forever from the rare word pool.
+    Pairs are generated randomly from the uncommon_words.txt list.
+    Produces millions of combinations — essentially infinite.
+    Targets short + rare combos: both words 3–4 chars for clean handles.
+    """
+    def load_pool() -> list:
+        if not UNCOMMON_WORDS_FILE.exists():
+            return ["rune", "vale", "ash", "sol", "ori", "fen", "koa", "nox"]
+        raw = UNCOMMON_WORDS_FILE.read_text().splitlines()
+        # Prefer short words (3-4 chars) for clean dotted handles
+        short = [w.strip().lower() for w in raw
+                 if w.strip() and 3 <= len(w.strip()) <= 4 and w.strip().isalpha()]
+        medium = [w.strip().lower() for w in raw
+                  if w.strip() and 5 <= len(w.strip()) <= 6 and w.strip().isalpha()]
+        # Mostly short pairs; occasionally medium
+        pool = short * 3 + medium
+        return pool if pool else ["rune", "vale", "ash", "sol"]
+
+    pool = load_pool()
+    random.shuffle(pool)
+
+    while True:
+        # Refresh pool occasionally to pick up any new words added
+        if random.random() < 0.001:
+            pool = load_pool()
+            random.shuffle(pool)
+
+        w1 = random.choice(pool)
+        w2 = random.choice(pool)
+        if w1 != w2:
+            username = f"{w1}.{w2}"
+            # Instagram max username length is 30; dotted handles: keep total <= 22
+            if len(username) <= 22:
+                yield username
+
+
 # ---------------------------------------------------------------------------
 # Infinite round-robin generator
 # ---------------------------------------------------------------------------
@@ -269,6 +342,7 @@ STRATEGY_NAMES = [
     "cvcv",
     "common_words",
     "foreign_words",
+    "dotted_words",
 ]
 
 
@@ -276,15 +350,16 @@ def infinite_candidate_generator(min_len: int, max_len: int):
     """
     Yields (username, strategy) tuples forever.
     Rotates through strategies every SWITCH_EVERY checks.
+    Dotted strategy rotates in every 6th slot (every ~120 checks).
     """
     SWITCH_EVERY = 20
 
     # These generators are stateful; build them once
-    uncommon_gen = itertools.cycle(load_uncommon_words(min_len, max_len) or [""])
     dict_gen = load_dict_words(min_len, max_len)  # generator — exhausts eventually
     cvcv_gen = cvcv_generator(min_len, max_len)   # infinite
     common_gen = common_words_generator(min_len, max_len)  # infinite cycle
     foreign_gen = foreign_words_generator(min_len, max_len)  # infinite cycle
+    dotted_gen = dotted_generator()               # infinite
 
     # Rebuild uncommon with fresh shuffle on each cycle
     def fresh_uncommon():
@@ -308,6 +383,7 @@ def infinite_candidate_generator(min_len: int, max_len: int):
         "cvcv":           cvcv_gen,
         "common_words":   common_gen,
         "foreign_words":  foreign_gen,
+        "dotted_words":   dotted_gen,
     }
 
     strategy_cycle = itertools.cycle(STRATEGY_NAMES)
@@ -324,8 +400,14 @@ def infinite_candidate_generator(min_len: int, max_len: int):
             count_in_strategy = 0
             continue
 
-        if not candidate or not candidate.isalpha():
-            continue
+        # Validate: plain strategies must be alpha; dotted strategy allows one dot
+        if current_strategy == "dotted_words":
+            parts = candidate.split(".")
+            if len(parts) != 2 or not all(p.isalpha() and p for p in parts):
+                continue
+        else:
+            if not candidate or not candidate.isalpha():
+                continue
 
         yield candidate, current_strategy
 
@@ -343,6 +425,7 @@ def infinite_candidate_generator(min_len: int, max_len: int):
 def check_instagram(username: str, session: requests.Session) -> bool:
     """
     Returns True if the username appears to be available (HTTP 404).
+    Works for both plain usernames and dotted handles (e.g. word.word).
     Handles 429 (rate limit) with a 60 s backoff, retries on transient errors.
     Raises KeyboardInterrupt passthrough; all other exceptions are retried up
     to 3 times.
@@ -386,24 +469,29 @@ def check_instagram(username: str, session: requests.Session) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Instagram username hunter — continuous loop")
-    parser.add_argument("--target",   type=int, default=70,  help="Stop after finding this many available names (default: 70)")
-    parser.add_argument("--min-len",  type=int, default=3,   help="Minimum username length (default: 3)")
-    parser.add_argument("--max-len",  type=int, default=6,   help="Maximum username length (default: 6)")
-    parser.add_argument("--dry-run",  action="store_true",   help="Generate candidates without hitting Instagram")
+    parser.add_argument("--target",     type=int, default=70,  help="Stop after finding this many plain available names (default: 70)")
+    parser.add_argument("--min-len",    type=int, default=3,   help="Minimum username length (default: 3)")
+    parser.add_argument("--max-len",    type=int, default=6,   help="Maximum username length (default: 6)")
+    parser.add_argument("--dry-run",    action="store_true",   help="Generate candidates without hitting Instagram")
+    parser.add_argument("--no-dotted",  action="store_true",   help="Disable the dotted handle strategy")
     args = parser.parse_args()
 
     ensure_csv_header()
     checked: set = load_checked()
-    available_count = 0
+    available_count = 0         # plain usernames found
+    available_dotted = 0        # dotted handles found (no limit — collect all)
     total_checked = len(checked)
 
     print(f"Instagram Username Hunter")
-    print(f"  Target    : {args.target} available")
-    print(f"  Length    : {args.min_len}–{args.max_len} chars")
-    print(f"  Dry-run   : {args.dry_run}")
-    print(f"  Resuming  : {total_checked} previously checked")
-    print(f"  State file: {CHECKED_FILE}")
-    print(f"  CSV output: {AVAILABLE_CSV}")
+    print(f"  Target (plain): {args.target} available")
+    print(f"  Dotted handles: unlimited — collect all found")
+    print(f"  Length        : {args.min_len}–{args.max_len} chars")
+    print(f"  Dry-run       : {args.dry_run}")
+    print(f"  Dotted mode   : {'OFF' if args.no_dotted else 'ON'}")
+    print(f"  Resuming      : {total_checked} previously checked")
+    print(f"  State file    : {CHECKED_FILE}")
+    print(f"  CSV (plain)   : {AVAILABLE_CSV}")
+    print(f"  CSV (dotted)  : {DOTTED_CSV}")
     print()
 
     session = requests.Session()
@@ -414,8 +502,16 @@ def main() -> None:
     checks_since_save = 0
     last_username = ""
 
+    # Build effective strategy list (optionally exclude dotted)
+    active_strategies = [s for s in STRATEGY_NAMES
+                         if not (args.no_dotted and s == "dotted_words")]
+
     try:
         for username, strategy in infinite_candidate_generator(args.min_len, args.max_len):
+
+            # Skip dotted if disabled
+            if args.no_dotted and strategy == "dotted_words":
+                continue
 
             # Skip already-checked
             if username in checked:
@@ -428,9 +524,12 @@ def main() -> None:
             checks_since_save += 1
             last_username = username
 
+            is_dotted = strategy == "dotted_words"
+
             if args.dry_run:
-                # Simulate: randomly decide available (1-in-30 chance)
-                is_available = random.random() < (1 / 30)
+                # Simulate: plain 1-in-30, dotted 1-in-8 (higher availability)
+                chance = (1 / 8) if is_dotted else (1 / 30)
+                is_available = random.random() < chance
                 time.sleep(0.01)
             else:
                 # Real delay: 2–5 s
@@ -440,40 +539,59 @@ def main() -> None:
             status_char = "✓" if is_available else "✗"
             status_word = "AVAILABLE" if is_available else "TAKEN"
 
+            # Display counter depends on type
+            plain_disp = available_count + (1 if (is_available and not is_dotted) else 0)
+            dot_disp   = available_dotted + (1 if (is_available and is_dotted) else 0)
+
             print(
-                f"[{total_checked} checked | {available_count + (1 if is_available else 0)} available "
-                f"| strategy: {strategy}] "
+                f"[{total_checked} chk | {plain_disp} plain | {dot_disp} dotted"
+                f" | {strategy}] "
                 f"{username} → {status_word} {status_char}",
                 flush=True,
             )
 
             if is_available:
-                available_count += 1
-                append_available(username, strategy)
+                if is_dotted:
+                    available_dotted += 1
+                    append_dotted(username)
+                    print(f"  🔵 Dotted handle: {username}", flush=True)
+                else:
+                    available_count += 1
+                    append_available(username, strategy)
+                    print(f"  🟢 Plain handle : {username}", flush=True)
+
                 write_progress(total_checked, available_count, args.target,
-                               strategy, last_username, start_time)
+                               available_dotted, strategy, last_username, start_time)
 
             # Periodic state save + progress report
             if checks_since_save >= SAVE_INTERVAL:
                 save_checked(checked)
                 write_progress(total_checked, available_count, args.target,
-                               strategy, last_username, start_time)
+                               available_dotted, strategy, last_username, start_time)
                 checks_since_save = 0
 
+            # Only plain usernames count toward the target
             if available_count >= args.target:
-                print(f"\n🎯 Target reached: {available_count} available usernames found after {total_checked} checks.")
+                print(
+                    f"\n🎯 Target reached: {available_count} plain usernames found "
+                    f"+ {available_dotted} dotted handles after {total_checked} checks."
+                )
                 break
 
     except KeyboardInterrupt:
-        print(f"\n⚡ Interrupted. {available_count} available found, {total_checked} checked total.")
+        print(
+            f"\n⚡ Interrupted. {available_count} plain + {available_dotted} dotted "
+            f"found, {total_checked} checked total."
+        )
 
     finally:
         save_checked(checked)
         write_progress(total_checked, available_count, args.target,
-                       "", last_username, start_time)
-        print(f"State saved → {CHECKED_FILE}")
-        print(f"Results    → {AVAILABLE_CSV}")
-        print(f"Progress   → {PROGRESS_FILE}")
+                       available_dotted, "", last_username, start_time)
+        print(f"State saved      → {CHECKED_FILE}")
+        print(f"Results (plain)  → {AVAILABLE_CSV}")
+        print(f"Results (dotted) → {DOTTED_CSV}")
+        print(f"Progress         → {PROGRESS_FILE}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # Runtime state — regenerated on each run
 checked.json
 available_usernames.csv
+available_dotted.csv
 progress.txt
 
 # Python
