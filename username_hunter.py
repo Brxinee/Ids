@@ -424,11 +424,18 @@ def infinite_candidate_generator(min_len: int, max_len: int):
 
 def check_instagram(username: str, session: requests.Session) -> bool:
     """
-    Returns True if the username appears to be available (HTTP 404).
-    Works for both plain usernames and dotted handles (e.g. word.word).
-    Handles 429 (rate limit) with a 60 s backoff, retries on transient errors.
-    Raises KeyboardInterrupt passthrough; all other exceptions are retried up
-    to 3 times.
+    Returns True if the username appears to be available.
+
+    Instagram now serves HTTP 200 for everything (even non-existent profiles)
+    because they use a client-side JS app. We therefore check the response
+    body for the phrases Instagram injects for missing profiles, in addition
+    to the legacy HTTP 404 signal.
+
+    Detection order:
+      1. HTTP 404                          → available
+      2. Body contains not-found markers   → available
+      3. HTTP 429                          → sleep 60 s, retry
+      4. Anything else (200 with profile)  → taken
     """
     url = IG_URL.format(username=username)
     headers = {
@@ -436,20 +443,48 @@ def check_instagram(username: str, session: requests.Session) -> bool:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Referer": "https://www.google.com/",
+        "X-Requested-With": "XMLHttpRequest",
     }
+
+    # Phrases Instagram embeds in the HTML when a profile doesn't exist
+    NOT_FOUND_MARKERS = [
+        "Sorry, this page isn't available",
+        "sorry, this page isn't available",
+        "Page Not Found",
+        "page isn't available",
+        "isn’t available",          # curly apostrophe version
+        '"user_not_found"',
+        '"username_not_found"',
+        '"UserNotFound"',
+        '"errorCode":100',
+    ]
 
     for attempt in range(4):
         try:
-            resp = session.get(url, headers=headers, timeout=10, allow_redirects=True)
+            resp = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+
             if resp.status_code == 404:
                 return True
+
             if resp.status_code == 429:
                 wait = 60 + random.uniform(0, 15)
                 print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
                 time.sleep(wait)
                 continue
-            # 200 → taken, 301/302 handled by allow_redirects
-            return False
+
+            if resp.status_code == 200:
+                body = resp.text
+                # Check body for not-found signals
+                for marker in NOT_FOUND_MARKERS:
+                    if marker in body:
+                        return True
+                # 200 with none of the markers → profile exists → taken
+                return False
+
+            # Any other status (5xx etc.) → treat as taken / retry
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+
         except requests.exceptions.ConnectionError:
             if attempt < 3:
                 time.sleep(2 ** attempt)
