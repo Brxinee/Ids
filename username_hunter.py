@@ -352,104 +352,84 @@ def infinite_candidate_generator(min_len: int, max_len: int, skip_dotted: bool =
 # Instagram availability check
 # ---------------------------------------------------------------------------
 
-# How detection works:
-# Instagram redirects profile pages (302) to /accounts/login/ when the
-# PROFILE EXISTS but requires login to view. Non-existent profiles return
-# 404 directly — they never redirect to login.
-#
-# So with allow_redirects=False:
-#   302 → Location contains "accounts/login"  →  profile EXISTS  →  taken
-#   404                                        →  does not exist  →  available
-#   200 + NOT_FOUND_MARKERS in body            →  does not exist  →  available
-#   200 + TAKEN_MARKERS in body                →  profile exists  →  taken
-#   429                                        →  rate limited    →  sleep + retry
-#   anything else                              →  unknown         →  skip (not taken)
-
-NOT_FOUND_MARKERS = [
-    "Sorry, this page isn’t available",   # curly apostrophe U+2019
-    "Sorry, this page isn’t available",
-    "Page Not Found",
-    "page isn’t available",
-    "page isn’t available",
-    ‘"user_not_found"’,
-    ‘"username_not_found"’,
-    ‘"UserNotFound"’,
-    ‘"errorCode":100’,
-    "The link you followed may be broken",
-]
-
-TAKEN_MARKERS = [
-    ‘"ProfilePage"’,
-    ‘"GraphUser"’,
-    ‘"is_private"’,
-    ‘"edge_followed_by"’,
-    ‘"biography"’,
-]
+# Detection uses Instagram’s own signup username-check endpoint.
+# This is the same endpoint their registration form uses when you type a username.
+# It requires only a csrftoken cookie (obtained from the homepage warm-up).
+# Returns JSON: {"status":"ok","available":true} or {"available":false}
+CHECK_URL = "https://www.instagram.com/api/v1/web/accounts/check_username/"
+SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/"
 
 
 def check_instagram(username: str, session: requests.Session) -> bool:
     """
-    Returns True if the username appears to be available.
+    Returns True if username is available, False if taken, None if rate-limited.
 
-    Detection (no API — avoids 429 rate limits):
-      1. GET profile URL without following redirects
-      2. 302 → Location has "accounts/login"  → taken
-      3. 404                                  → available
-      4. 200 + NOT_FOUND_MARKERS              → available
-      5. 200 + TAKEN_MARKERS                  → taken
-      6. 429                                  → sleep 65 s, retry
-      7. Unknown / error                      → skip (return None-like via False)
+    Uses Instagram’s own /check_username/ endpoint (same as their signup form).
+    Requires csrftoken cookie — obtained during session warm-up in main().
     """
-    profile_url = IG_URL.format(username=username)
+    csrf = session.cookies.get("csrftoken", "")
 
-    ua = random.choice(USER_AGENTS)
     headers = {
-        "User-Agent":                ua,
-        "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language":           "en-US,en;q=0.9",
-        "Accept-Encoding":           "gzip, deflate, br",
-        "Referer":                   "https://www.google.com/",
-        "Connection":                "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest":            "document",
-        "Sec-Fetch-Mode":            "navigate",
-        "Sec-Fetch-Site":            "cross-site",
-        "Cache-Control":             "max-age=0",
+        "User-Agent":       random.choice(USER_AGENTS),
+        "Accept":           "*/*",
+        "Accept-Language":  "en-US,en;q=0.9",
+        "Content-Type":     "application/x-www-form-urlencoded",
+        "X-CSRFToken":      csrf,
+        "X-Instagram-AJAX": "1",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer":          SIGNUP_URL,
+        "Origin":           "https://www.instagram.com",
     }
 
     for attempt in range(4):
         try:
-            resp = session.get(profile_url, headers=headers, timeout=15,
-                               allow_redirects=False)
+            resp = session.post(
+                CHECK_URL,
+                data={"username": username},
+                headers=headers,
+                timeout=15,
+            )
 
-            # ── 302 redirect ───────────────────────────────────────────────
-            if resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location", "")
-                if "accounts/login" in location:
-                    return False   # profile exists, Instagram protecting it
-                if "404" in location or "page_not_found" in location:
-                    return True
-                # Other redirect (e.g. trailing-slash normalisation) — follow once
-                follow = session.get(
-                    location if location.startswith("http") else f"https://www.instagram.com{location}",
-                    headers=headers, timeout=15, allow_redirects=False,
-                )
-                if follow.status_code == 404:
-                    return True
-                if "accounts/login" in follow.headers.get("Location", ""):
-                    return False
-                body = follow.text
-                for m in NOT_FOUND_MARKERS:
-                    if m in body:
-                        return True
-                for m in TAKEN_MARKERS:
-                    if m in body:
-                        return False
-                return False  # unknown → safe default
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "ok":
+                    return bool(data.get("available", False))
+                # status != ok → treat as taken
+                return False
 
-            # ── 404 ────────────────────────────────────────────────────────
-            if resp.status_code == 404:
-                return True
+            if resp.status_code == 429:
+                wait = 65 + random.uniform(0, 20)
+                print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
+                time.sleep(wait)
+                continue
+
+            if resp.status_code in (401, 403):
+                # CSRF expired — refresh session
+                try:
+                    session.get(SIGNUP_URL, timeout=10,
+                                headers={"User-Agent": random.choice(USER_AGENTS)})
+                    csrf = session.cookies.get("csrftoken", "")
+                    headers["X-CSRFToken"] = csrf
+                except Exception:
+                    pass
+                if attempt < 3:
+                    time.sleep(3)
+                continue
+
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+
+        except requests.exceptions.ConnectionError:
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+        except requests.exceptions.Timeout:
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
 
             # ── 429 rate limit ─────────────────────────────────────────────
             if resp.status_code == 429:
@@ -528,27 +508,28 @@ def main() -> None:
     print()
 
     session = requests.Session()
-    # Warm up session: visit homepage to get cookies (csrftoken, etc.)
-    # This makes subsequent requests look like a real browser session.
+    # Warm up: visit signup page to get csrftoken cookie.
+    # The check_username endpoint needs this token in the X-CSRFToken header.
     try:
-        print("  Warming up session …", flush=True)
-        session.get(
-            "https://www.instagram.com/",
-            headers={
-                "User-Agent": random.choice(USER_AGENTS),
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            },
-            timeout=15,
-            allow_redirects=True,
-        )
-        print("  Session ready ✓", flush=True)
-        time.sleep(random.uniform(2, 4))
-    except Exception:
-        print("  Session warm-up failed, continuing anyway.", flush=True)
+        print("  Warming up session (getting CSRF token) …", flush=True)
+        ua = random.choice(USER_AGENTS)
+        # Step 1: homepage
+        session.get("https://www.instagram.com/",
+                    headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"},
+                    timeout=15)
+        time.sleep(random.uniform(1, 2))
+        # Step 2: signup page (sets a fresh csrftoken)
+        session.get(SIGNUP_URL,
+                    headers={"User-Agent": ua,
+                             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                             "Accept-Language": "en-US,en;q=0.9",
+                             "Referer": "https://www.instagram.com/"},
+                    timeout=15)
+        csrf = session.cookies.get("csrftoken", "")
+        print(f"  Session ready ✓  (csrf: {csrf[:8]}…)", flush=True)
+        time.sleep(random.uniform(2, 3))
+    except Exception as e:
+        print(f"  Warm-up failed ({e}), continuing anyway.", flush=True)
 
     start_time = time.time()
     SAVE_INTERVAL = 50
