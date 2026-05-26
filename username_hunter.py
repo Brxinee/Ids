@@ -576,9 +576,9 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                # 60-90 sec per check — slow but never rate-limited
-                base = 60 + consecutive_429 * 30
-                time.sleep(random.uniform(base, base + 30))
+                # 5-8 min per check — indistinguishable from human browsing
+                base = 300 + consecutive_429 * 60
+                time.sleep(random.uniform(base, base + 180))
                 is_available = check_instagram(username, session)
 
                 # Track rate limit pressure — slow down if Instagram pushes back
