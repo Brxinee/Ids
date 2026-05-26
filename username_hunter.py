@@ -557,9 +557,9 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                # Progressive delay: longer after rate limits
-                base = 8 + consecutive_429 * 5
-                time.sleep(random.uniform(base, base + 5))
+                # 60-90 sec per check — slow but never rate-limited
+                base = 60 + consecutive_429 * 30
+                time.sleep(random.uniform(base, base + 30))
                 is_available = check_instagram(username, session)
 
                 # Track rate limit pressure — slow down if Instagram pushes back
