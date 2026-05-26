@@ -479,7 +479,7 @@ def check_instagram(username: str, session: requests.Session) -> bool:
             if attempt < 3:
                 time.sleep(2 ** (attempt + 1))
 
-    return False  # persistent failure → treat as taken
+    return None  # persistent 429 / failure → signal caller to back off
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +525,7 @@ def main() -> None:
     SAVE_INTERVAL = 50
     checks_since_save = 0
     last_username = ""
+    consecutive_429 = 0   # track back-to-back rate limits
 
     try:
         for username, strategy in infinite_candidate_generator(
@@ -546,8 +547,22 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                time.sleep(random.uniform(2, 5))
+                # Progressive delay: longer after rate limits
+                base = 8 + consecutive_429 * 5
+                time.sleep(random.uniform(base, base + 5))
                 is_available = check_instagram(username, session)
+
+                # Track rate limit pressure — slow down if Instagram pushes back
+                if is_available is None:
+                    # check_instagram signals 429-exhausted via None
+                    consecutive_429 += 1
+                    if consecutive_429 >= 3:
+                        long_wait = 600 + random.uniform(0, 120)  # 10-12 min
+                        print(f"\n  [RATE LIMITED x{consecutive_429}] Sleeping {long_wait:.0f}s …", flush=True)
+                        time.sleep(long_wait)
+                    is_available = False
+                else:
+                    consecutive_429 = 0  # reset on successful response
 
             status_char = "✓" if is_available else "✗"
             status_word = "AVAILABLE" if is_available else "TAKEN"
