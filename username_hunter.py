@@ -527,28 +527,37 @@ def main() -> None:
     print()
 
     session = requests.Session()
-    # Warm up: visit signup page to get csrftoken cookie.
-    # The check_username endpoint needs this token in the X-CSRFToken header.
-    try:
-        print("  Warming up session (getting CSRF token) …", flush=True)
-        ua = random.choice(USER_AGENTS)
-        # Step 1: homepage
-        session.get("https://www.instagram.com/",
-                    headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"},
-                    timeout=15)
-        time.sleep(random.uniform(1, 2))
-        # Step 2: signup page (sets a fresh csrftoken)
-        session.get(SIGNUP_URL,
-                    headers={"User-Agent": ua,
-                             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                             "Accept-Language": "en-US,en;q=0.9",
-                             "Referer": "https://www.instagram.com/"},
-                    timeout=15)
-        csrf = session.cookies.get("csrftoken", "")
-        print(f"  Session ready ✓  (csrf: {csrf[:8]}…)", flush=True)
-        time.sleep(random.uniform(2, 3))
-    except Exception as e:
-        print(f"  Warm-up failed ({e}), continuing anyway.", flush=True)
+    # Load saved login session if available (from login.py)
+    session_file = SCRIPT_DIR / "session.json"
+    if session_file.exists():
+        try:
+            import json as _json
+            saved = _json.loads(session_file.read_text())
+            session.cookies.set("sessionid", saved["sessionid"], domain=".instagram.com")
+            session.cookies.set("csrftoken",  saved["csrftoken"],  domain=".instagram.com")
+            print(f"  ✅ Loaded saved session (sessionid: {saved['sessionid'][:8]}…)", flush=True)
+        except Exception as e:
+            print(f"  ⚠️  Could not load session.json: {e}", flush=True)
+    else:
+        # No saved session — warm up anonymously via signup page
+        try:
+            print("  Warming up session (getting CSRF token) …", flush=True)
+            ua = random.choice(USER_AGENTS)
+            session.get("https://www.instagram.com/",
+                        headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"},
+                        timeout=15)
+            time.sleep(random.uniform(1, 2))
+            session.get(SIGNUP_URL,
+                        headers={"User-Agent": ua,
+                                 "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                                 "Accept-Language": "en-US,en;q=0.9",
+                                 "Referer": "https://www.instagram.com/"},
+                        timeout=15)
+            csrf = session.cookies.get("csrftoken", "")
+            print(f"  Session ready ✓  (csrf: {csrf[:8]}…)", flush=True)
+            time.sleep(random.uniform(2, 3))
+        except Exception as e:
+            print(f"  Warm-up failed ({e}), continuing anyway.", flush=True)
 
     start_time = time.time()
     SAVE_INTERVAL = 50
