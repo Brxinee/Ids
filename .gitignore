@@ -1,8 +1,10 @@
 # Runtime state — regenerated on each run
 checked.json
-available_usernames.csv
-available_dotted.csv
 progress.txt
+
+# Results are tracked so findings are saved to GitHub
+# available_usernames.csv
+# available_dotted.csv
 
 # Python
 __pycache__/
