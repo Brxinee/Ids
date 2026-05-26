@@ -352,22 +352,31 @@ def infinite_candidate_generator(min_len: int, max_len: int, skip_dotted: bool =
 # Instagram availability check
 # ---------------------------------------------------------------------------
 
-# Detection uses Instagram’s own signup username-check endpoint.
-# This is the same endpoint their registration form uses when you type a username.
-# It requires only a csrftoken cookie (obtained from the homepage warm-up).
-# Returns JSON: {"status":"ok","available":true} or {"available":false}
-CHECK_URL = "https://www.instagram.com/api/v1/web/accounts/check_username/"
-SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/"
+# Uses Instagram’s signup attempt endpoint.
+# - TAKEN:     response errors contain a "username" key
+# - AVAILABLE: response errors have no "username" key (only email/password errors)
+# - 429:       rate limited → sleep + retry
+SIGNUP_URL  = "https://www.instagram.com/accounts/emailsignup/"
+ATTEMPT_URL = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
 
 
-def check_instagram(username: str, session: requests.Session) -> bool:
+def check_instagram(username: str, session: requests.Session):
     """
-    Returns True if username is available, False if taken, None if rate-limited.
+    Returns True if available, False if taken, None if persistently rate-limited.
 
-    Uses Instagram’s own /check_username/ endpoint (same as their signup form).
-    Requires csrftoken cookie — obtained during session warm-up in main().
+    POSTs to Instagram’s signup attempt endpoint with the target username.
+    If the response JSON has errors.username → taken.
+    If no errors.username → available (only email/password errors).
     """
     csrf = session.cookies.get("csrftoken", "")
+    if not csrf:
+        # Re-warm session if CSRF missing
+        try:
+            session.get(SIGNUP_URL, timeout=10,
+                        headers={"User-Agent": random.choice(USER_AGENTS)})
+            csrf = session.cookies.get("csrftoken", "")
+        except Exception:
+            pass
 
     headers = {
         "User-Agent":       random.choice(USER_AGENTS),
@@ -384,27 +393,37 @@ def check_instagram(username: str, session: requests.Session) -> bool:
     for attempt in range(4):
         try:
             resp = session.post(
-                CHECK_URL,
-                data={"username": username},
+                ATTEMPT_URL,
+                data={
+                    "email":      f"chk{random.randint(10000,99999)}@mailinator.com",
+                    "password":   "Chk@7654321",
+                    "username":   username,
+                    "first_name": "Test",
+                },
                 headers=headers,
                 timeout=15,
             )
 
             if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status") == "ok":
-                    return bool(data.get("available", False))
-                # status != ok → treat as taken
-                return False
+                try:
+                    data = resp.json()
+                    errors = data.get("errors", {})
+                    # If username key in errors → username is taken
+                    if "username" in errors:
+                        return False
+                    # No username error → available
+                    return True
+                except Exception:
+                    return False  # bad JSON → treat as taken
 
             if resp.status_code == 429:
-                wait = 65 + random.uniform(0, 20)
+                wait = 90 + random.uniform(0, 30)
                 print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
                 time.sleep(wait)
                 continue
 
-            if resp.status_code in (401, 403):
-                # CSRF expired — refresh session
+            if resp.status_code in (400, 401, 403):
+                # Refresh CSRF and retry
                 try:
                     session.get(SIGNUP_URL, timeout=10,
                                 headers={"User-Agent": random.choice(USER_AGENTS)})
@@ -413,7 +432,7 @@ def check_instagram(username: str, session: requests.Session) -> bool:
                 except Exception:
                     pass
                 if attempt < 3:
-                    time.sleep(3)
+                    time.sleep(5)
                 continue
 
             if attempt < 3:
