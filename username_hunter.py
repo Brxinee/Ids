@@ -352,19 +352,31 @@ def infinite_candidate_generator(min_len: int, max_len: int, skip_dotted: bool =
 # Instagram availability check
 # ---------------------------------------------------------------------------
 
-# Phrases Instagram injects in the HTML when a profile does NOT exist.
-# Includes both straight apostrophe (') and Unicode curly apostrophe (’).
+# Instagram JSON API endpoint — returns 404 when user doesn’t exist, 200 with
+# user data when they do. Much more reliable than HTML body scraping.
+IG_API_URL = "https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+
+# Fallback: phrases in HTML body that indicate a missing profile.
 NOT_FOUND_MARKERS = [
-    "Sorry, this page isn’t available",   # curly apostrophe (actual HTML)
-    "Sorry, this page isn't available",         # straight apostrophe fallback
+    "Sorry, this page isn’t available",   # curly apostrophe U+2019 (real HTML)
+    "Sorry, this page isn’t available",        # straight apostrophe fallback
     "Page Not Found",
     "page isn’t available",
-    "page isn't available",
-    '"user_not_found"',
-    '"username_not_found"',
-    '"UserNotFound"',
-    '"errorCode":100',
+    "page isn’t available",
+    ‘"user_not_found"’,
+    ‘"username_not_found"’,
+    ‘"UserNotFound"’,
+    ‘"errorCode":100’,
     "The link you followed may be broken",
+    ‘"data":{"user":null}’,                    # JSON API: user field is null
+]
+
+# Phrases that confirm a profile EXISTS (body-check fallback).
+TAKEN_MARKERS = [
+    ‘"ProfilePage"’,
+    ‘"GraphUser"’,
+    ‘"is_private"’,
+    ‘"edge_followed_by"’,
 ]
 
 
@@ -372,32 +384,43 @@ def check_instagram(username: str, session: requests.Session) -> bool:
     """
     Returns True if the username appears to be available.
 
-    Instagram returns HTTP 200 for everything (even non-existent profiles)
-    because they serve a JS SPA shell. We check the response body for
-    phrases Instagram injects when a profile doesn't exist.
-
-    Detection:
-      1. HTTP 404                        → available
-      2. Body contains NOT_FOUND_MARKERS → available
-      3. HTTP 429                        → sleep 65s, retry
-      4. HTTP 200, no markers            → taken (profile exists)
-      5. Connection/timeout error        → retry up to 3×, then treat as taken
+    Detection strategy (in order):
+      1. JSON API  → 404              : available
+      2. JSON API  → 200, user=null   : available
+      3. JSON API  → 200, user data   : taken
+      4. HTML page → 404              : available
+      5. HTML page → NOT_FOUND_MARKERS: available
+      6. HTML page → TAKEN_MARKERS    : taken
+      7. HTTP 429                     : sleep 65 s, retry
+      8. Persistent failure           : treat as taken (safe default)
     """
-    url = IG_URL.format(username=username)
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
+    api_url     = IG_API_URL.format(username=username)
+    profile_url = IG_URL.format(username=username)
+
+    api_headers = {
+        "User-Agent":      random.choice(USER_AGENTS),
+        "Accept":          "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://www.google.com/",
-        "Cache-Control": "no-cache",
+        "x-ig-app-id":     "936619743392459",
+        "Referer":         "https://www.instagram.com/",
+        "X-Requested-With":"XMLHttpRequest",
+    }
+    html_headers = {
+        "User-Agent":      random.choice(USER_AGENTS),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Referer":         "https://www.google.com/",
+        "Cache-Control":   "no-cache",
     }
 
     for attempt in range(4):
         try:
-            resp = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+            # ── Primary: JSON API ──────────────────────────────────────────
+            resp = session.get(api_url, headers=api_headers, timeout=15,
+                               allow_redirects=True)
 
             if resp.status_code == 404:
-                return True
+                return True                          # clear "not found"
 
             if resp.status_code == 429:
                 wait = 65 + random.uniform(0, 20)
@@ -406,13 +429,33 @@ def check_instagram(username: str, session: requests.Session) -> bool:
                 continue
 
             if resp.status_code == 200:
-                body = resp.text
+                try:
+                    data = resp.json()
+                    user = data.get("data", {}).get("user")
+                    if user is None:
+                        return True                  # API says user = null
+                    return False                     # user object present = taken
+                except Exception:
+                    pass                             # bad JSON → fall to HTML
+
+            # ── Fallback: HTML profile page ────────────────────────────────
+            resp2 = session.get(profile_url, headers=html_headers, timeout=15,
+                                allow_redirects=True)
+
+            if resp2.status_code == 404:
+                return True
+
+            if resp2.status_code == 200:
+                body = resp2.text
                 for marker in NOT_FOUND_MARKERS:
                     if marker in body:
                         return True
-                return False  # 200 with user data = taken
+                for marker in TAKEN_MARKERS:
+                    if marker in body:
+                        return False
+                # Could not determine — treat as taken (safe)
+                return False
 
-            # 5xx or unexpected → retry with backoff
             if attempt < 3:
                 time.sleep(2 ** (attempt + 1))
 
