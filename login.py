@@ -4,7 +4,6 @@ Your password is never saved — only the session token is stored.
 """
 import requests
 import json
-import getpass
 import uuid
 import hashlib
 from pathlib import Path
@@ -19,7 +18,7 @@ print("=" * 50)
 print()
 
 username = input("Instagram username: ").strip()
-password = getpass.getpass("Instagram password (hidden): ").strip()
+password = input("Instagram password: ").strip()
 
 print("\nLogging in...")
 
