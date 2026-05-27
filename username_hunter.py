@@ -356,87 +356,89 @@ def infinite_candidate_generator(min_len: int, max_len: int, skip_dotted: bool =
 # - TAKEN:     response errors contain a "username" key
 # - AVAILABLE: response errors have no "username" key (only email/password errors)
 # - 429:       rate limited → sleep + retry
-SIGNUP_URL  = "https://www.instagram.com/accounts/emailsignup/"
-ATTEMPT_URL = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
+SIGNUP_URL   = "https://www.instagram.com/accounts/emailsignup/"
+ATTEMPT_URL  = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
+PROFILE_API  = "https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
 
 
 def check_instagram(username: str, session: requests.Session):
     """
-    Returns True if available, False if taken, None if persistently rate-limited.
+    Returns True if available, False if taken, None if rate-limited.
 
-    POSTs to Instagram’s signup attempt endpoint with the target username.
-    If the response JSON has errors.username → taken.
-    If no errors.username → available (only email/password errors).
+    If logged in (sessionid cookie present):
+      → Uses profile info API: 404 = available, 200 with user = taken
+    If not logged in:
+      → Falls back to signup attempt endpoint
     """
+    is_logged_in = bool(session.cookies.get("sessionid", ""))
     csrf = session.cookies.get("csrftoken", "")
-    if not csrf:
-        # Re-warm session if CSRF missing
-        try:
-            session.get(SIGNUP_URL, timeout=10,
-                        headers={"User-Agent": random.choice(USER_AGENTS)})
-            csrf = session.cookies.get("csrftoken", "")
-        except Exception:
-            pass
-
-    headers = {
-        "User-Agent":       random.choice(USER_AGENTS),
-        "Accept":           "*/*",
-        "Accept-Language":  "en-US,en;q=0.9",
-        "Content-Type":     "application/x-www-form-urlencoded",
-        "X-CSRFToken":      csrf,
-        "X-Instagram-AJAX": "1",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer":          SIGNUP_URL,
-        "Origin":           "https://www.instagram.com",
-    }
 
     for attempt in range(4):
         try:
-            resp = session.post(
-                ATTEMPT_URL,
-                data={
-                    "email":      f"chk{random.randint(10000,99999)}@mailinator.com",
-                    "password":   "Chk@7654321",
-                    "username":   username,
-                    "first_name": "Test",
-                },
-                headers=headers,
-                timeout=15,
-            )
-
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    errors = data.get("errors", {})
-                    # If username key in errors → username is taken
-                    if "username" in errors:
+            if is_logged_in:
+                # ── Logged-in: profile info API ────────────────────────────
+                resp = session.get(
+                    PROFILE_API.format(username=username),
+                    headers={
+                        "User-Agent":       random.choice(USER_AGENTS),
+                        "Accept":           "application/json",
+                        "Accept-Language":  "en-US,en;q=0.9",
+                        "x-ig-app-id":      "936619743392459",
+                        "Referer":          "https://www.instagram.com/",
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 404:
+                    return True   # user doesn’t exist → available
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        user = data.get("data", {}).get("user")
+                        return user is None  # null user → available
+                    except Exception:
                         return False
-                    # No username error → available
-                    return True
-                except Exception:
-                    return False  # bad JSON → treat as taken
-
-            if resp.status_code == 429:
-                wait = 90 + random.uniform(0, 30)
-                print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
-                time.sleep(wait)
-                continue
-
-            if resp.status_code in (400, 401, 403):
-                # Refresh CSRF and retry
-                try:
-                    session.get(SIGNUP_URL, timeout=10,
-                                headers={"User-Agent": random.choice(USER_AGENTS)})
-                    csrf = session.cookies.get("csrftoken", "")
-                    headers["X-CSRFToken"] = csrf
-                except Exception:
-                    pass
+                if resp.status_code == 429:
+                    wait = 60 + random.uniform(0, 30)
+                    print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
+                    time.sleep(wait)
+                    continue
                 if attempt < 3:
-                    time.sleep(5)
-                continue
+                    time.sleep(2 ** (attempt + 1))
 
-            if attempt < 3:
-                time.sleep(2 ** (attempt + 1))
+            else:
+                # ── Not logged in: signup attempt endpoint ─────────────────
+                resp = session.post(
+                    ATTEMPT_URL,
+                    data={
+                        "email":      f"chk{random.randint(10000,99999)}@mailinator.com",
+                        "password":   "Chk@7654321",
+                        "username":   username,
+                        "first_name": "Test",
+                    },
+                    headers={
+                        "User-Agent":       random.choice(USER_AGENTS),
+                        "X-CSRFToken":      csrf,
+                        "X-Instagram-AJAX": "1",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Content-Type":     "application/x-www-form-urlencoded",
+                        "Referer":          SIGNUP_URL,
+                        "Origin":           "https://www.instagram.com",
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    try:
+                        errors = resp.json().get("errors", {})
+                        return "username" not in errors
+                    except Exception:
+                        return False
+                if resp.status_code == 429:
+                    wait = 90 + random.uniform(0, 30)
+                    print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
+                    time.sleep(wait)
+                    continue
+                if attempt < 3:
+                    time.sleep(2 ** (attempt + 1))
 
         except requests.exceptions.ConnectionError:
             if attempt < 3:
@@ -585,9 +587,9 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                # 5-8 min per check — indistinguishable from human browsing
-                base = 300 + consecutive_429 * 60
-                time.sleep(random.uniform(base, base + 180))
+                # 20-40 sec per check — safe rate for logged-in session
+                base = 20 + consecutive_429 * 15
+                time.sleep(random.uniform(base, base + 20))
                 is_available = check_instagram(username, session)
 
                 # Track rate limit pressure — slow down if Instagram pushes back
