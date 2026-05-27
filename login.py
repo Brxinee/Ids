@@ -1,29 +1,17 @@
 """
 Log into Instagram and save session for the hunter script.
 Uses only built-in Python — no extra packages needed.
-Your password is never saved — only the session token is stored.
 """
 import requests
 import json
-import uuid
-import hmac
-import hashlib
+import time
 from pathlib import Path
 
 SCRIPT_DIR   = Path(__file__).parent.resolve()
 SESSION_FILE = SCRIPT_DIR / "session.json"
 
-# Instagram's app signing key (public, used by all checkers)
-IG_SIG_KEY = "9193488027538fd3450b83b7d05286d4ca8d7b1f9e76b57b8eeaea7e56f9872"
-IG_APP_ID  = "567067343352427"
-IG_UA      = ("Instagram 269.0.0.18.75 Android (26/8.0.0; 480dpi; "
-              "1080x1920; OnePlus; ONEPLUS A3003; OnePlus3; qcom; en_US; 314665256)")
-
-def sign(data: dict) -> str:
-    """Sign request data with Instagram's HMAC key."""
-    body = json.dumps(data, separators=(",", ":"))
-    sig  = hmac.new(IG_SIG_KEY.encode(), body.encode(), hashlib.sha256).hexdigest()
-    return f"signed_body={sig}.{body}&ig_sig_key_version=4"
+UA = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
 
 print("=" * 50)
 print("  Instagram Login")
@@ -38,45 +26,51 @@ print("\nLogging in...")
 s = requests.Session()
 
 try:
-    # Step 1: get CSRF token
-    r = s.get("https://www.instagram.com/", headers={"User-Agent": IG_UA}, timeout=15)
-    csrf = s.cookies.get("csrftoken", "missing")
+    # Step 1: load login page to get cookies + CSRF
+    s.get("https://www.instagram.com/", headers={"User-Agent": UA}, timeout=15)
+    time.sleep(1)
+    r = s.get("https://www.instagram.com/accounts/login/",
+              headers={"User-Agent": UA}, timeout=15)
+    csrf = s.cookies.get("csrftoken", "")
+    print(f"  CSRF: {csrf[:10]}...")
 
-    # Step 2: login with signed request
-    device_id = "android-" + hashlib.md5(username.encode()).hexdigest()[:16]
-    guid      = str(uuid.uuid4())
+    # Step 2: build enc_password (version 0 = plain, no RSA needed)
+    ts          = int(time.time())
+    enc_password = f"#PWD_INSTAGRAM_BROWSER:0:{ts}:{password}"
 
-    payload = sign({
-        "_csrftoken":          csrf,
-        "username":            username,
-        "password":            password,
-        "device_id":           device_id,
-        "guid":                guid,
-        "phone_id":            str(uuid.uuid4()),
-        "login_attempt_count": 0,
-        "_uuid":               guid,
-    })
+    # jazoest = sum of ASCII values of CSRF token chars + 2
+    jazoest = str(sum(ord(c) for c in csrf) + 2)
 
+    # Step 3: POST login
     r = s.post(
-        "https://i.instagram.com/api/v1/accounts/login/",
-        data=payload,
+        "https://www.instagram.com/accounts/login/ajax/",
+        data={
+            "username":             username,
+            "enc_password":         enc_password,
+            "queryParams":          "{}",
+            "optIntoOneTap":        "false",
+            "trustedDeviceRecords": "{}",
+            "jazoest":              jazoest,
+        },
         headers={
-            "User-Agent":           IG_UA,
-            "Content-Type":         "application/x-www-form-urlencoded",
-            "X-IG-App-ID":          IG_APP_ID,
-            "X-IG-Capabilities":    "3brTvwM=",
-            "X-IG-Connection-Type": "WIFI",
-            "Accept-Language":      "en-US",
-            "X-CSRFToken":          csrf,
+            "User-Agent":       UA,
+            "X-CSRFToken":      csrf,
+            "X-Instagram-AJAX": "1",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type":     "application/x-www-form-urlencoded",
+            "Referer":          "https://www.instagram.com/accounts/login/",
+            "Origin":           "https://www.instagram.com",
+            "Accept":           "*/*",
         },
         timeout=15,
     )
 
     print(f"  Status: {r.status_code}")
+    print(f"  Body  : {r.text[:300]}")
 
     if r.status_code == 200:
         data = r.json()
-        if data.get("status") == "ok":
+        if data.get("authenticated"):
             sessionid = s.cookies.get("sessionid", "")
             csrf2     = s.cookies.get("csrftoken",  "")
             SESSION_FILE.write_text(json.dumps({
@@ -85,15 +79,14 @@ try:
             }))
             print(f"\n✅ Login successful! Session saved.")
             print(f"\nNow run:  python username_hunter.py")
+        elif data.get("two_factor_required"):
+            print("\n⚠️  2FA is ON. Disable it in Instagram app settings, then retry.")
+        elif data.get("checkpoint_required"):
+            print("\n⚠️  Open Instagram app → approve the login → then retry here.")
         else:
-            msg = data.get("message", str(data))
-            print(f"\n❌ Failed: {msg}")
-            if "two_factor" in str(data):
-                print("⚠️  Disable 2FA in Instagram app, then retry.")
-            if "checkpoint" in str(data) or "challenge" in str(data):
-                print("⚠️  Open Instagram app → approve the login → retry.")
+            print(f"\n❌ Failed: {data.get('message', data)}")
     else:
-        print(f"\n❌ Response: {r.text[:400]}")
+        print(f"\n❌ Unexpected status {r.status_code}")
 
 except Exception as e:
     print(f"\n❌ Error: {e}")
