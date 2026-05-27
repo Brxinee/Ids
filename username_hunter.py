@@ -352,110 +352,126 @@ def infinite_candidate_generator(min_len: int, max_len: int, skip_dotted: bool =
 # Instagram availability check
 # ---------------------------------------------------------------------------
 
-# Instagram JSON API endpoint — returns 404 when user doesn’t exist, 200 with
-# user data when they do. Much more reliable than HTML body scraping.
-IG_API_URL = "https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
-
-# Fallback: phrases in HTML body that indicate a missing profile.
-NOT_FOUND_MARKERS = [
-    "Sorry, this page isn’t available",   # curly apostrophe U+2019 (real HTML)
-    "Sorry, this page isn’t available",        # straight apostrophe fallback
-    "Page Not Found",
-    "page isn’t available",
-    "page isn’t available",
-    ‘"user_not_found"’,
-    ‘"username_not_found"’,
-    ‘"UserNotFound"’,
-    ‘"errorCode":100’,
-    "The link you followed may be broken",
-    ‘"data":{"user":null}’,                    # JSON API: user field is null
-]
-
-# Phrases that confirm a profile EXISTS (body-check fallback).
-TAKEN_MARKERS = [
-    ‘"ProfilePage"’,
-    ‘"GraphUser"’,
-    ‘"is_private"’,
-    ‘"edge_followed_by"’,
-]
+# Uses Instagram’s signup attempt endpoint.
+# - TAKEN:     response errors contain a "username" key
+# - AVAILABLE: response errors have no "username" key (only email/password errors)
+# - 429:       rate limited → sleep + retry
+SIGNUP_URL   = "https://www.instagram.com/accounts/emailsignup/"
+ATTEMPT_URL  = "https://www.instagram.com/accounts/web_create_ajax/attempt/"
+PROFILE_API  = "https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
 
 
-def check_instagram(username: str, session: requests.Session) -> bool:
+def check_instagram(username: str, session: requests.Session):
     """
-    Returns True if the username appears to be available.
+    Returns True if available, False if taken, None if rate-limited.
 
-    Detection strategy (in order):
-      1. JSON API  → 404              : available
-      2. JSON API  → 200, user=null   : available
-      3. JSON API  → 200, user data   : taken
-      4. HTML page → 404              : available
-      5. HTML page → NOT_FOUND_MARKERS: available
-      6. HTML page → TAKEN_MARKERS    : taken
-      7. HTTP 429                     : sleep 65 s, retry
-      8. Persistent failure           : treat as taken (safe default)
+    If logged in (sessionid cookie present):
+      → Uses profile info API: 404 = available, 200 with user = taken
+    If not logged in:
+      → Falls back to signup attempt endpoint
     """
-    api_url     = IG_API_URL.format(username=username)
-    profile_url = IG_URL.format(username=username)
-
-    api_headers = {
-        "User-Agent":      random.choice(USER_AGENTS),
-        "Accept":          "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "x-ig-app-id":     "936619743392459",
-        "Referer":         "https://www.instagram.com/",
-        "X-Requested-With":"XMLHttpRequest",
-    }
-    html_headers = {
-        "User-Agent":      random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
-        "Referer":         "https://www.google.com/",
-        "Cache-Control":   "no-cache",
-    }
+    is_logged_in = bool(session.cookies.get("sessionid", ""))
+    csrf = session.cookies.get("csrftoken", "")
 
     for attempt in range(4):
         try:
-            # ── Primary: JSON API ──────────────────────────────────────────
-            resp = session.get(api_url, headers=api_headers, timeout=15,
-                               allow_redirects=True)
+            if is_logged_in:
+                # ── Logged-in: profile info API ────────────────────────────
+                resp = session.get(
+                    PROFILE_API.format(username=username),
+                    headers={
+                        "User-Agent":       random.choice(USER_AGENTS),
+                        "Accept":           "application/json",
+                        "Accept-Language":  "en-US,en;q=0.9",
+                        "x-ig-app-id":      "936619743392459",
+                        "Referer":          "https://www.instagram.com/",
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 404:
+                    return True   # user doesn’t exist → available
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        user = data.get("data", {}).get("user")
+                        return user is None  # null user → available
+                    except Exception:
+                        return False
+                if resp.status_code == 429:
+                    wait = 60 + random.uniform(0, 30)
+                    print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
+                    time.sleep(wait)
+                    continue
+                if attempt < 3:
+                    time.sleep(2 ** (attempt + 1))
 
-            if resp.status_code == 404:
-                return True                          # clear "not found"
+            else:
+                # ── Not logged in: signup attempt endpoint ─────────────────
+                resp = session.post(
+                    ATTEMPT_URL,
+                    data={
+                        "email":      f"chk{random.randint(10000,99999)}@mailinator.com",
+                        "password":   "Chk@7654321",
+                        "username":   username,
+                        "first_name": "Test",
+                    },
+                    headers={
+                        "User-Agent":       random.choice(USER_AGENTS),
+                        "X-CSRFToken":      csrf,
+                        "X-Instagram-AJAX": "1",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Content-Type":     "application/x-www-form-urlencoded",
+                        "Referer":          SIGNUP_URL,
+                        "Origin":           "https://www.instagram.com",
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    try:
+                        errors = resp.json().get("errors", {})
+                        return "username" not in errors
+                    except Exception:
+                        return False
+                if resp.status_code == 429:
+                    wait = 90 + random.uniform(0, 30)
+                    print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
+                    time.sleep(wait)
+                    continue
+                if attempt < 3:
+                    time.sleep(2 ** (attempt + 1))
 
+        except requests.exceptions.ConnectionError:
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+        except requests.exceptions.Timeout:
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            if attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+
+            # ── 429 rate limit ─────────────────────────────────────────────
             if resp.status_code == 429:
                 wait = 65 + random.uniform(0, 20)
                 print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
                 time.sleep(wait)
                 continue
 
+            # ── 200 ────────────────────────────────────────────────────────
             if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    user = data.get("data", {}).get("user")
-                    if user is None:
-                        return True                  # API says user = null
-                    return False                     # user object present = taken
-                except Exception:
-                    pass                             # bad JSON → fall to HTML
-
-            # ── Fallback: HTML profile page ────────────────────────────────
-            resp2 = session.get(profile_url, headers=html_headers, timeout=15,
-                                allow_redirects=True)
-
-            if resp2.status_code == 404:
-                return True
-
-            if resp2.status_code == 200:
-                body = resp2.text
-                for marker in NOT_FOUND_MARKERS:
-                    if marker in body:
+                body = resp.text
+                for m in NOT_FOUND_MARKERS:
+                    if m in body:
                         return True
-                for marker in TAKEN_MARKERS:
-                    if marker in body:
+                for m in TAKEN_MARKERS:
+                    if m in body:
                         return False
-                # Could not determine — treat as taken (safe)
+                # 200 but no markers = Instagram login wall, can’t tell
                 return False
 
+            # ── 5xx / other → retry ────────────────────────────────────────
             if attempt < 3:
                 time.sleep(2 ** (attempt + 1))
 
@@ -471,7 +487,7 @@ def check_instagram(username: str, session: requests.Session) -> bool:
             if attempt < 3:
                 time.sleep(2 ** (attempt + 1))
 
-    return False  # persistent failure → treat as taken
+    return None  # persistent 429 / failure → signal caller to back off
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +529,43 @@ def main() -> None:
     print()
 
     session = requests.Session()
+    # Load saved login session if available (from login.py)
+    session_file = SCRIPT_DIR / "session.json"
+    if session_file.exists():
+        try:
+            import json as _json
+            saved = _json.loads(session_file.read_text())
+            session.cookies.set("sessionid", saved["sessionid"], domain=".instagram.com")
+            session.cookies.set("csrftoken",  saved["csrftoken"],  domain=".instagram.com")
+            print(f"  ✅ Loaded saved session (sessionid: {saved['sessionid'][:8]}…)", flush=True)
+        except Exception as e:
+            print(f"  ⚠️  Could not load session.json: {e}", flush=True)
+    else:
+        # No saved session — warm up anonymously via signup page
+        try:
+            print("  Warming up session (getting CSRF token) …", flush=True)
+            ua = random.choice(USER_AGENTS)
+            session.get("https://www.instagram.com/",
+                        headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"},
+                        timeout=15)
+            time.sleep(random.uniform(1, 2))
+            session.get(SIGNUP_URL,
+                        headers={"User-Agent": ua,
+                                 "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                                 "Accept-Language": "en-US,en;q=0.9",
+                                 "Referer": "https://www.instagram.com/"},
+                        timeout=15)
+            csrf = session.cookies.get("csrftoken", "")
+            print(f"  Session ready ✓  (csrf: {csrf[:8]}…)", flush=True)
+            time.sleep(random.uniform(2, 3))
+        except Exception as e:
+            print(f"  Warm-up failed ({e}), continuing anyway.", flush=True)
+
     start_time = time.time()
     SAVE_INTERVAL = 50
     checks_since_save = 0
     last_username = ""
+    consecutive_429 = 0   # track back-to-back rate limits
 
     try:
         for username, strategy in infinite_candidate_generator(
@@ -538,8 +587,22 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                time.sleep(random.uniform(2, 5))
+                # 20-40 sec per check — safe rate for logged-in session
+                base = 20 + consecutive_429 * 15
+                time.sleep(random.uniform(base, base + 20))
                 is_available = check_instagram(username, session)
+
+                # Track rate limit pressure — slow down if Instagram pushes back
+                if is_available is None:
+                    # check_instagram signals 429-exhausted via None
+                    consecutive_429 += 1
+                    if consecutive_429 >= 3:
+                        long_wait = 600 + random.uniform(0, 120)  # 10-12 min
+                        print(f"\n  [RATE LIMITED x{consecutive_429}] Sleeping {long_wait:.0f}s …", flush=True)
+                        time.sleep(long_wait)
+                    is_available = False
+                else:
+                    consecutive_429 = 0  # reset on successful response
 
             status_char = "✓" if is_available else "✗"
             status_word = "AVAILABLE" if is_available else "TAKEN"
