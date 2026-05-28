@@ -294,11 +294,12 @@ def dotted_generator():
 # ---------------------------------------------------------------------------
 
 STRATEGY_NAMES = [
-    "uncommon_words",
-    "cvcv",
-    "common_words",
-    "foreign_words",
     "dotted_words",
+    "uncommon_words",
+    "dotted_words",
+    "cvcv",
+    "dotted_words",
+    "foreign_words",
 ]
 
 
