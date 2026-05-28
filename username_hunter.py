@@ -541,6 +541,14 @@ def main() -> None:
     last_username = ""
     consecutive_429 = 0   # track back-to-back rate limits
 
+    # ── Proactive hourly rate cap ────────────────────────────────────────
+    # Instagram allows ~200 requests/hour per account before 429.
+    # Staying safely UNDER that means we NEVER trip the rate limit.
+    # Research: linear hammering → permanent IP blacklist. This avoids it.
+    HOURLY_CAP   = 150 if not args.proxy else 1000   # checks per rolling hour
+    hour_start   = time.time()
+    hour_count   = 0
+
     try:
         for username, strategy in infinite_candidate_generator(
             args.min_len, args.max_len, skip_dotted=args.no_dotted
@@ -548,6 +556,21 @@ def main() -> None:
             # Skip already-checked
             if username in checked:
                 continue
+
+            # ── Enforce hourly cap (only for real runs) ──────────────────
+            if not args.dry_run:
+                now = time.time()
+                if now - hour_start >= 3600:
+                    hour_start = now      # reset the rolling window
+                    hour_count = 0
+                if hour_count >= HOURLY_CAP:
+                    wait = 3600 - (now - hour_start) + 5
+                    print(f"\n  [HOURLY CAP {HOURLY_CAP}] Reached safe limit. "
+                          f"Pausing {wait/60:.0f} min to stay un-banned …", flush=True)
+                    time.sleep(wait)
+                    hour_start = time.time()
+                    hour_count = 0
+                hour_count += 1
 
             checked.add(username)
             total_checked += 1
@@ -561,9 +584,10 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                # with proxy: 5-10s per check; without: 20-40s
-                base = (5 if args.proxy else 20) + consecutive_429 * 15
-                time.sleep(random.uniform(base, base + (5 if args.proxy else 20)))
+                # No proxy: 25-40s/check (~110-145/hr, safely under 150 cap).
+                # With proxy: 5-10s/check. Backoff widens after each 429.
+                base = (5 if args.proxy else 25) + consecutive_429 * 15
+                time.sleep(random.uniform(base, base + (5 if args.proxy else 15)))
                 is_available = check_instagram(username, session)
 
                 # Track rate limit pressure — slow down if Instagram pushes back
