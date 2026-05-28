@@ -452,41 +452,6 @@ def check_instagram(username: str, session: requests.Session):
             if attempt < 3:
                 time.sleep(2 ** (attempt + 1))
 
-            # ── 429 rate limit ─────────────────────────────────────────────
-            if resp.status_code == 429:
-                wait = 65 + random.uniform(0, 20)
-                print(f"\n  [RATE LIMITED] Sleeping {wait:.0f}s …", flush=True)
-                time.sleep(wait)
-                continue
-
-            # ── 200 ────────────────────────────────────────────────────────
-            if resp.status_code == 200:
-                body = resp.text
-                for m in NOT_FOUND_MARKERS:
-                    if m in body:
-                        return True
-                for m in TAKEN_MARKERS:
-                    if m in body:
-                        return False
-                # 200 but no markers = Instagram login wall, can’t tell
-                return False
-
-            # ── 5xx / other → retry ────────────────────────────────────────
-            if attempt < 3:
-                time.sleep(2 ** (attempt + 1))
-
-        except requests.exceptions.ConnectionError:
-            if attempt < 3:
-                time.sleep(2 ** (attempt + 1))
-        except requests.exceptions.Timeout:
-            if attempt < 3:
-                time.sleep(2 ** (attempt + 1))
-        except KeyboardInterrupt:
-            raise
-        except Exception:
-            if attempt < 3:
-                time.sleep(2 ** (attempt + 1))
-
     return None  # persistent 429 / failure → signal caller to back off
 
 
@@ -502,6 +467,7 @@ def main() -> None:
     parser.add_argument("--max-len",   type=int,  default=6,     help="Maximum username length (default 6)")
     parser.add_argument("--dry-run",   action="store_true",      help="Simulate without hitting Instagram")
     parser.add_argument("--no-dotted", action="store_true",      help="Disable dotted handle strategy")
+    parser.add_argument("--proxy",     type=str,  default="",    help="Proxy URL e.g. http://user:pass@host:port")
     args = parser.parse_args()
 
     ensure_csv_header()
@@ -525,10 +491,17 @@ def main() -> None:
     print(f"  Plain found so far : {available_count}")
     print(f"  Dotted found so far: {available_dotted}")
     print(f"  Word pool size   : {sum(1 for _ in open(UNCOMMON_WORDS_FILE)) if UNCOMMON_WORDS_FILE.exists() else 0} words")
+    print(f"  Proxy            : {args.proxy.split('@')[-1] if args.proxy else 'None (direct)'}")
     print("=" * 56)
     print()
 
     session = requests.Session()
+
+    # Apply proxy if provided
+    if args.proxy:
+        session.proxies.update({"http": args.proxy, "https": args.proxy})
+        print(f"  🌐 Proxy active: {args.proxy.split('@')[-1]}", flush=True)
+
     # Load saved login session if available (from login.py)
     session_file = SCRIPT_DIR / "session.json"
     if session_file.exists():
@@ -587,9 +560,9 @@ def main() -> None:
                 is_available = random.random() < chance
                 time.sleep(0.01)
             else:
-                # 20-40 sec per check — safe rate for logged-in session
-                base = 20 + consecutive_429 * 15
-                time.sleep(random.uniform(base, base + 20))
+                # with proxy: 5-10s per check; without: 20-40s
+                base = (5 if args.proxy else 20) + consecutive_429 * 15
+                time.sleep(random.uniform(base, base + (5 if args.proxy else 20)))
                 is_available = check_instagram(username, session)
 
                 # Track rate limit pressure — slow down if Instagram pushes back
