@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IdsVault — Premium Instagram Handles</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#080808;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
+
+    /* ── GATE ── */
+    .gate{text-align:center;padding:40px 20px;animation:fadeIn .4s ease}
+    .gate-icon{font-size:3.5rem;margin-bottom:20px}
+    .gate h1{font-size:2.4rem;font-weight:800;letter-spacing:6px;color:#fff;text-transform:uppercase}
+    .gate .sub{color:#555;margin:8px 0 36px;font-size:.95rem;letter-spacing:2px}
+    .gate input{background:#111;border:1px solid #222;color:#fff;padding:14px 20px;font-size:1rem;border-radius:10px;width:300px;outline:none;transition:border-color .2s;letter-spacing:2px;text-align:center}
+    .gate input:focus{border-color:#4ade80;box-shadow:0 0 0 3px rgba(74,222,128,.1)}
+    .gate button{display:block;margin:16px auto 0;background:#4ade80;color:#000;border:none;padding:14px 48px;font-size:1rem;font-weight:700;border-radius:10px;cursor:pointer;letter-spacing:1px;transition:all .2s}
+    .gate button:hover{background:#22c55e;transform:translateY(-1px)}
+    .gate .err{color:#f87171;margin-top:14px;font-size:.85rem;display:none}
+
+    /* ── VAULT ── */
+    .vault{display:none;padding:32px 20px;max-width:1100px;margin:0 auto;width:100%;animation:fadeIn .4s ease}
+    .vault-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:16px}
+    .vault-top h1{font-size:1.6rem;font-weight:800;letter-spacing:4px;color:#fff}
+    .stats{display:flex;gap:20px}
+    .stat{text-align:center}
+    .stat .n{font-size:1.6rem;font-weight:800;color:#4ade80;line-height:1}
+    .stat .l{font-size:.7rem;color:#555;letter-spacing:1px;margin-top:3px;text-transform:uppercase}
+
+    /* ── TABS ── */
+    .tabs{display:flex;gap:4px;background:#111;padding:4px;border-radius:10px;width:fit-content;margin-bottom:24px}
+    .tab{padding:8px 22px;border-radius:7px;cursor:pointer;font-size:.85rem;color:#666;border:none;background:transparent;transition:all .2s;font-weight:600}
+    .tab.active{background:#1e1e1e;color:#fff}
+
+    /* ── GRID ── */
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+    .card{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:16px 12px;text-align:center;user-select:none;-webkit-user-select:none;-moz-user-select:none;position:relative;overflow:hidden;transition:border-color .2s,transform .2s;cursor:default}
+    .card:hover{border-color:#4ade80;transform:translateY(-2px)}
+    .card .handle{font-size:.95rem;font-weight:600;color:#fff;filter:blur(5px);transition:filter .25s;pointer-events:none}
+    .card:hover .handle{filter:blur(0)}
+    .card .kind{font-size:.65rem;color:#444;margin-top:5px;text-transform:uppercase;letter-spacing:1px}
+    .card .wm{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-25deg);font-size:.55rem;color:rgba(255,255,255,.03);white-space:nowrap;pointer-events:none;letter-spacing:3px;font-weight:700}
+
+    /* ── LOCK BTN ── */
+    .lockbtn{position:fixed;top:16px;right:16px;background:#111;border:1px solid #222;border-radius:20px;padding:7px 16px;font-size:.8rem;color:#4ade80;cursor:pointer;transition:background .2s;z-index:100}
+    .lockbtn:hover{background:#1a1a1a}
+
+    .empty{text-align:center;color:#333;padding:80px 0;grid-column:1/-1;font-size:1rem}
+
+    @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+    /* ── SEARCH ── */
+    .search{background:#111;border:1px solid #1e1e1e;color:#fff;padding:10px 16px;border-radius:8px;width:100%;max-width:320px;outline:none;font-size:.9rem;margin-bottom:20px}
+    .search:focus{border-color:#4ade80}
+    .search::placeholder{color:#444}
+
+    @media(max-width:500px){
+      .gate h1{font-size:1.8rem}
+      .gate input{width:260px}
+      .vault-top{flex-direction:column;align-items:flex-start}
+    }
+  </style>
+</head>
+<body>
+
+<!-- GATE -->
+<div class="gate" id="gate">
+  <div class="gate-icon">🔐</div>
+  <h1>IdsVault</h1>
+  <p class="sub">Premium Instagram Handles</p>
+  <input type="password" id="pwd" placeholder="••••••••" onkeydown="if(event.key==='Enter')unlock()" autocomplete="off">
+  <button onclick="unlock()">Unlock Vault</button>
+  <p class="err" id="err">Wrong password. Try again.</p>
+</div>
+
+<!-- VAULT -->
+<div class="vault" id="vault">
+  <button class="lockbtn" onclick="lock()">🔒 Lock</button>
+
+  <div class="vault-top">
+    <h1>🔐 IdsVault</h1>
+    <div class="stats">
+      <div class="stat"><div class="n" id="sp">0</div><div class="l">Plain</div></div>
+      <div class="stat"><div class="n" id="sd">0</div><div class="l">Dotted</div></div>
+      <div class="stat"><div class="n" id="st">0</div><div class="l">Total</div></div>
+    </div>
+  </div>
+
+  <input class="search" id="search" placeholder="Search handles..." oninput="filterGrid()" autocomplete="off">
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('all',this)">All</button>
+    <button class="tab" onclick="showTab('plain',this)">Plain</button>
+    <button class="tab" onclick="showTab('dotted',this)">Dotted</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+// ─── PASSWORD ───────────────────────────────────────────────────────────
+// Default password is: idsvault
+// To change: get SHA-256 of your new password from https://emn178.github.io/online-tools/sha256.html
+// and replace the string below
+const PWD_HASH = "2d57e3d9fa21a69e3c0b61ed0a92426c4a27b7e0cc3aef0bcfc3a2ba1c8c9cef";
+
+// ─── DATA ───────────────────────────────────────────────────────────────
+// This gets replaced automatically by update_data.py
+// Format: {u:"username", t:"plain"} or {u:"word.word", t:"dotted"}
+const DATA = [];
+
+// ─── ANTI-COPY ──────────────────────────────────────────────────────────
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('copy', e => e.preventDefault());
+document.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (e.ctrlKey && ['c','a','u','s','p'].includes(k)) e.preventDefault();
+  if (e.key === 'F12') e.preventDefault();
+  if (e.ctrlKey && e.shiftKey && ['i','j','c'].includes(k)) e.preventDefault();
+});
+document.addEventListener('dragstart', e => e.preventDefault());
+document.addEventListener('selectstart', e => e.preventDefault());
+
+// ─── AUTH ────────────────────────────────────────────────────────────────
+async function sha256(msg) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(msg));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function unlock() {
+  const pwd = document.getElementById('pwd').value;
+  if (!pwd) return;
+  const hash = await sha256(pwd);
+  if (hash === PWD_HASH) {
+    document.getElementById('gate').style.display = 'none';
+    document.getElementById('vault').style.display = 'block';
+    document.body.style.alignItems = 'flex-start';
+    sessionStorage.setItem('v','1');
+    loadVault();
+  } else {
+    const err = document.getElementById('err');
+    err.style.display = 'block';
+    document.getElementById('pwd').value = '';
+    setTimeout(() => err.style.display = 'none', 3000);
+  }
+}
+
+function lock() {
+  sessionStorage.removeItem('v');
+  document.getElementById('vault').style.display = 'none';
+  document.getElementById('gate').style.display = 'block';
+  document.body.style.alignItems = 'center';
+}
+
+if (sessionStorage.getItem('v')) {
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('vault').style.display = 'block';
+  document.body.style.alignItems = 'flex-start';
+  loadVault();
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────────
+let currentTab = 'all';
+
+function loadVault() {
+  const plain = DATA.filter(d => d.t === 'plain');
+  const dotted = DATA.filter(d => d.t === 'dotted');
+  document.getElementById('sp').textContent = plain.length;
+  document.getElementById('sd').textContent = dotted.length;
+  document.getElementById('st').textContent = DATA.length;
+  renderGrid(DATA);
+}
+
+function card(d) {
+  return `<div class="card"><div class="wm">IDSVAULT IDSVAULT</div><div class="handle">@${d.u}</div><div class="kind">${d.t}</div></div>`;
+}
+
+function renderGrid(items) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = items.length
+    ? items.map(card).join('')
+    : '<div class="empty">No handles yet — script is running 🔍</div>';
+}
+
+function showTab(tab, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  currentTab = tab;
+  applyFilter();
+}
+
+function filterGrid() { applyFilter(); }
+
+function applyFilter() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const base = currentTab === 'all' ? DATA : DATA.filter(d => d.t === currentTab);
+  const items = q ? base.filter(d => d.u.includes(q)) : base;
+  renderGrid(items);
+}
+</script>
+</body>
+</html>
